@@ -1,0 +1,83 @@
+# Cloud Build pipeline: build both container images, push to Artifact Registry,
+# deploy both Cloud Run services.
+#
+# Substitutions (set by the Terraform-managed trigger):
+#   _REGION, _REPO, _API_SERVICE, _FRONTEND_SERVICE, _API_SA, _FRONTEND_SA
+
+substitutions:
+  _REGION: us-central1
+  _REPO: todo-app
+  _API_SERVICE: todo-api
+  _FRONTEND_SERVICE: todo-frontend
+  _API_SA: api-sa
+  _FRONTEND_SA: frontend-sa
+
+steps:
+  # ---------- API ----------
+  - id: build-api
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/api:${SHORT_SHA}
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/api:latest
+      - ./api
+
+  - id: push-api
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/api
+
+  - id: deploy-api
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_API_SERVICE}
+      - --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/api:${SHORT_SHA}
+      - --region=${_REGION}
+      - --service-account=${_API_SA}@${PROJECT_ID}.iam.gserviceaccount.com
+      - --no-allow-unauthenticated
+      - --quiet
+
+  # ---------- Frontend ----------
+  - id: build-frontend
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/frontend:${SHORT_SHA}
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/frontend:latest
+      - ./frontend
+
+  - id: push-frontend
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/frontend
+
+  - id: deploy-frontend
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        API_URL=$(gcloud run services describe ${_API_SERVICE} \
+          --region=${_REGION} --format='value(status.url)')
+        gcloud run deploy ${_FRONTEND_SERVICE} \
+          --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/frontend:${SHORT_SHA} \
+          --region=${_REGION} \
+          --service-account=${_FRONTEND_SA}@${PROJECT_ID}.iam.gserviceaccount.com \
+          --set-env-vars="API_URL=$${API_URL}" \
+          --allow-unauthenticated \
+          --quiet
+
+options:
+  logging: CLOUD_LOGGING_ONLY
